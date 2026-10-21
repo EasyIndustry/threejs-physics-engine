@@ -1,0 +1,23 @@
+{
+  "name": "threejs-physics-engine",
+  "version": "0.1.0-rc.1",
+  "description": "Física para three.js con Rapier, con datos planos: cuerpos, colliders, personajes, sensores, rayos y grupos con nombre, validados como datos. Un puente entre Rapier y la suite: colliders a partir de un Object3D, cuerpos enlazados con objetos o entidades del juego, y una vista de depuración. El núcleo no sabe de Rapier.",
+  "type": "module",
+  "license": "MIT",
+  "author": "EasyIndustry",
+  "repository": { "type": "git", "url": "git+https://github.com/EasyIndustry/threejs-physics-engine.git" },
+  "exports": {
+    ".": "./src/index.js",
+    "./rapier": "./adapters/rapier/physics.js",
+    "./three": "./adapters/three/index.js"
+  },
+  "files": ["src", "adapters", "examples", "LICENSE", "README.md"],
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc -p ."
+  },
+  "peerDependencies": { "three": ">=0.160.0", "@dimforge/rapier3d-compat": ">=0.21.0" },
+  "peerDependenciesMeta": { "three": { "optional": true }, "@dimforge/rapier3d-compat": { "optional": true } },
+  "devDependencies": { "typescript": "^6.0.0", "three": "0.170.0", "@dimforge/rapier3d-compat": "0.21.0" },
+  "engines": { "node": ">=20" }
+}

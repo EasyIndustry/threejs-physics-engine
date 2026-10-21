@@ -1,0 +1,23 @@
+{
+  // Tipado sin build: TypeScript solo verifica (noEmit), como un linter. Los archivos son
+  // .js con tipos en JSDoc, y el navegador los carga tal cual.
+  //
+  //   npm install && npm run typecheck
+  //
+  // Cubre el núcleo y el adaptador de Rapier, en modo estricto (Rapier trae sus tipos; para el
+  // adaptador alcanza con que exista: el módulo se trata como any). El adaptador de three queda
+  // afuera: verificarlo pediría instalar @types/three, y el núcleo no depende de three.
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM"],
+    "types": [],
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.js", "adapters/rapier/**/*.js"]
+}

@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Physics engine</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+        "@dimforge/rapier3d-compat": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs"
+      }
+    }
+  </script>
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; background: #15161a; font: 12px system-ui, sans-serif; color: #ddd; }
+    #panel { position: absolute; left: 12px; top: 10px; display: flex; flex-wrap: wrap; gap: 6px; max-width: calc(100% - 24px); }
+    #panel button { font: inherit; color: #ddd; background: #2a2c33; border: 1px solid #444; border-radius: 4px; padding: 4px 8px; cursor: pointer; }
+    #panel button[aria-pressed="true"] { background: #1c3a4a; border-color: #2f8bb8; }
+    #ayuda { position: absolute; right: 12px; top: 10px; opacity: 0.75; text-align: right; line-height: 1.5; }
+    #estado { position: absolute; left: 12px; bottom: 10px; opacity: 0.85; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div id="panel">
+    <button id="depuracion" aria-pressed="false">Depuración (G)</button>
+    <button id="soltar">Soltar más (R)</button>
+    <button id="limpiar">Limpiar</button>
+  </div>
+  <div id="ayuda">WASD: caminar · Espacio: saltar · click: empujar lo que apuntás<br />el escalón bajo se sube, el alto no; la zona verde avisa al entrar</div>
+  <div id="estado"></div>
+  <script type="module">
+    // Una escena con three directo y OrbitControls (sin threejs-render-engine ni el juego). La
+    // física corre con su propio paso fijo (fisica.advance) y los enlaces copian cada cuerpo a su
+    // malla, interpolando. Con render y el juego sería:
+    //
+    //   const motor = createEngine(document.body, { preset: 'warm' });
+    //   const juego = createGame({ engine: motor, bindings: { mover: { type: 'axis2', keys: { up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD' } }, saltar: ['Space'] } });
+    //   const fisica = await createPhysics();
+    //   const sistema = bodySystem(juego.world, fisica);           // fisica.step(dt) en el paso fijo del juego
+    //   juego.world.add({ object3d: malla, transform: { position: [0, 4, 0] }, body: { colliders: collidersFrom(malla) } });
+    //   const heroe = juego.world.add({ object3d: capsula, transform: { position: [0, 0, 0] }, character: { radius: 0.3, height: 1.6 } });
+    //   juego.world.system('caminar', (dt) => { … sistema.of(heroe).move([vx * dt, vy * dt, vz * dt]); });
+    //   const depuracion = createDebugView(fisica);
+    //   motor.overlay.add(depuracion.object);                      // encima de todo, fuera del post-proceso
+    //   motor.onFrame(() => depuracion.update());
+    //
+    // y el juego dibuja los transforms interpolados (no hacen falta los enlaces).
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { createPhysics } from '../adapters/rapier/physics.js';
+    import { collidersFrom, createLinks, createDebugView } from '../adapters/three/index.js';
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    document.body.appendChild(renderer.domElement);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#15161a');
+    scene.fog = new THREE.Fog('#15161a', 30, 60);
+    scene.add(new THREE.HemisphereLight('#9fb2c8', '#2a2018', 1.1));
+    const sol = new THREE.DirectionalLight('#ffffff', 2);
+    sol.position.set(6, 12, 4);
+    sol.castShadow = true;
+    sol.shadow.mapSize.set(2048, 2048);
+    Object.assign(sol.shadow.camera, { left: -16, right: 16, top: 16, bottom: -16 });
+    scene.add(sol);
+    const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 200);
+    camera.position.set(-6, 7, 11);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 1, 0);
+    addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
+
+    const fisica = await createPhysics({
+      groups: ['escena', 'cosas', 'heroe'],
+      materials: { goma: { restitution: 0.75, restitutionCombine: 'max' }, hielo: { friction: 0.02, frictionCombine: 'min' } },
+    });
+    const enlaces = createLinks(fisica);
+    const depuracion = createDebugView(fisica);
+    depuracion.visible = false;
+    scene.add(depuracion.object);
+
+    const material = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.8, ...extra });
+    /** Una malla fija con su cuerpo, a partir de su geometría (collidersFrom). */
+    function fijo(geo, color, position, rotation = [0, 0, 0], extra = {}) {
+      const m = new THREE.Mesh(geo, material(color));
+      m.position.fromArray(position);
+      m.rotation.set(...rotation.map(THREE.MathUtils.degToRad));
+      m.castShadow = m.receiveShadow = true;
+      scene.add(m);
+      const b = fisica.body({ type: 'fixed', position, rotation, colliders: collidersFrom(m).map((c) => ({ ...c, group: 'escena', ...extra })), name: extra.name ?? '' });
+      return { malla: m, cuerpo: b };
+    }
+
+    // el piso, un escalón bajo (0.25: se sube), uno alto (0.6: no), una pared, una rampa y hielo
+    fijo(new THREE.BoxGeometry(30, 1, 30), '#3a3833', [0, -0.5, 0], [0, 0, 0], { name: 'piso' });
+    fijo(new THREE.BoxGeometry(3, 0.25, 3), '#5b5446', [4, 0.125, -2], [0, 0, 0], { name: 'escalon' });
+    fijo(new THREE.BoxGeometry(3, 0.6, 3), '#6b4b3b', [4, 0.3, 2], [0, 0, 0], { name: 'alto' });
+    fijo(new THREE.BoxGeometry(0.4, 2.5, 8), '#4a4f5a', [-5, 1.25, 0], [0, 0, 0], { name: 'pared' });
+    fijo(new THREE.BoxGeometry(6, 0.3, 3), '#50573f', [0, 0.85, -7], [0, 0, 18], { name: 'rampa' });
+    fijo(new THREE.BoxGeometry(5, 0.05, 5), '#9fd3e8', [-1, 0.025, 6], [0, 0, 0], { name: 'hielo', material: 'hielo' });
+
+    // la zona: un sensor que cambia de color cuando entra el héroe
+    const zonaMat = new THREE.MeshStandardMaterial({ color: '#2fbf5a', transparent: true, opacity: 0.25, depthWrite: false });
+    const zonaMalla = new THREE.Mesh(new THREE.BoxGeometry(2.5, 2, 2.5), zonaMat);
+    zonaMalla.position.set(-2, 1, -3);
+    scene.add(zonaMalla);
+    const zona = fisica.body({ type: 'fixed', name: 'zona', position: [-2, 1, -3], colliders: collidersFrom(zonaMalla).map((c) => ({ ...c, sensor: true })) });
+
+    // el héroe: una cápsula que camina con character.move
+    const capsula = new THREE.Group();
+    const cuerpoMalla = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 1.0, 6, 16), material('#d8a24a'));
+    cuerpoMalla.position.y = 0.8;
+    cuerpoMalla.castShadow = true;
+    const nariz = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.12, 0.25), material('#7a4a1a'));
+    nariz.position.set(0, 1.3, 0.3);
+    capsula.add(cuerpoMalla, nariz);
+    scene.add(capsula);
+    const heroe = fisica.character({ name: 'heroe', radius: 0.3, height: 1.6, position: [0, 0, 2], step: 0.3, slope: 40, group: 'heroe', collidesWith: ['escena', 'cosas'] });
+    enlaces.link(heroe, capsula); // sin rotación: hacia dónde mira es de la app
+
+    let enZona = false;
+    fisica.on('enter', zona, heroe, () => { enZona = true; zonaMat.color.set('#ffcc33'); zonaMat.opacity = 0.45; });
+    fisica.on('exit', zona, heroe, () => { enZona = false; zonaMat.color.set('#2fbf5a'); zonaMat.opacity = 0.25; });
+
+    // cajas y pelotas que caen y rebotan (la goma rebota más)
+    const cosas = new Map();
+    const colores = ['#c8553d', '#f2a65a', '#3d8bc8', '#8bc83d', '#b36ad1'];
+    function soltar(n = 10) {
+      for (let i = 0; i < n; i++) {
+        const pelota = i % 2 === 1;
+        const geo = pelota ? new THREE.SphereGeometry(0.35, 24, 16) : new THREE.BoxGeometry(0.7, 0.7, 0.7);
+        const m = new THREE.Mesh(geo, material(colores[cosas.size % colores.length]));
+        m.castShadow = m.receiveShadow = true;
+        scene.add(m);
+        const b = fisica.body({
+          position: [Math.sin(cosas.size * 2.3) * 3, 4 + i * 0.9, Math.cos(cosas.size * 1.7) * 3],
+          rotation: [cosas.size * 17, cosas.size * 31, 0],
+          colliders: collidersFrom(m, { shape: pelota ? 'sphere' : 'box' }).map((c) => ({ ...c, group: 'cosas', material: pelota ? 'goma' : null })),
+        });
+        enlaces.link(b, m);
+        cosas.set(b, m);
+      }
+    }
+    soltar(12);
+    // un golpe fuerte las hace brillar un momento
+    const brillos = new Map();
+    fisica.on('contact', (a, b, info) => {
+      if (info.impulse < 1.5) return;
+      for (const x of [a, b]) if (cosas.has(x)) brillos.set(cosas.get(x), 0.25);
+    });
+
+    // la entrada: WASD relativo a la cámara, espacio para saltar, click para empujar
+    const teclas = new Set();
+    addEventListener('keydown', (e) => {
+      if (e.repeat) return;
+      teclas.add(e.code);
+      if (e.code === 'KeyG') alternar();
+      if (e.code === 'KeyR') soltar(6);
+    });
+    addEventListener('keyup', (e) => teclas.delete(e.code));
+    addEventListener('blur', () => teclas.clear());
+    const mouse = new THREE.Vector2(), rayo = new THREE.Raycaster();
+    let abajo = null;
+    renderer.domElement.addEventListener('pointerdown', (e) => { abajo = [e.clientX, e.clientY]; });
+    renderer.domElement.addEventListener('pointerup', (e) => {
+      if (!abajo || Math.hypot(e.clientX - abajo[0], e.clientY - abajo[1]) > 4) return; // fue un arrastre de la órbita
+      mouse.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+      rayo.setFromCamera(mouse, camera);
+      const hit = fisica.ray(rayo.ray.origin.toArray(), rayo.ray.direction.toArray(), { exclude: heroe });
+      if (hit?.body?.type === 'dynamic') hit.body.applyImpulse(rayo.ray.direction.clone().multiplyScalar(4 * hit.body.mass).toArray(), hit.point);
+    });
+
+    const boton = document.getElementById('depuracion');
+    function alternar() { depuracion.visible = !depuracion.visible; boton.setAttribute('aria-pressed', String(depuracion.visible)); }
+    boton.onclick = alternar;
+    document.getElementById('soltar').onclick = () => soltar(6);
+    document.getElementById('limpiar').onclick = () => {
+      for (const [b, m] of cosas) { enlaces.unlink(b); b.remove(); m.removeFromParent(); m.geometry.dispose(); }
+      cosas.clear();
+    };
+
+    // caminar: en cada paso fijo de la física, la velocidad que pide la app y la gravedad (move se
+    // aplica en el próximo step)
+    const VELOCIDAD = 4.5, SALTO = 5.5;
+    let vy = 0, rumbo = 0;
+    const adelante = new THREE.Vector3(), derecha = new THREE.Vector3();
+    function caminar(dt) {
+      camera.getWorldDirection(adelante);
+      adelante.y = 0; adelante.normalize();
+      derecha.crossVectors(adelante, camera.up).normalize();
+      let x = 0, z = 0;
+      if (teclas.has('KeyW')) { x += adelante.x; z += adelante.z; }
+      if (teclas.has('KeyS')) { x -= adelante.x; z -= adelante.z; }
+      if (teclas.has('KeyD')) { x += derecha.x; z += derecha.z; }
+      if (teclas.has('KeyA')) { x -= derecha.x; z -= derecha.z; }
+      const l = Math.hypot(x, z);
+      if (l > 0) { x = (x / l) * VELOCIDAD; z = (z / l) * VELOCIDAD; rumbo = Math.atan2(x, z); }
+      if (heroe.grounded && vy < 0) vy = 0;
+      if (heroe.grounded && teclas.has('Space')) vy = SALTO;
+      vy -= 9.81 * dt;
+      heroe.move([x * dt, vy * dt, z * dt]);
+    }
+    fisica.onStep(caminar);
+    caminar(1 / 60);
+
+    const estado = document.getElementById('estado');
+    const reloj = new THREE.Clock();
+    let cuadros = 0;
+    renderer.setAnimationLoop(() => {
+      const dt = reloj.getDelta();
+      fisica.advance(dt);          // los pasos de 1/60 que entran (a lo sumo 5 por cuadro)
+      enlaces.sync();              // interpolado con fisica.alpha
+      capsula.rotation.y += Math.atan2(Math.sin(rumbo - capsula.rotation.y), Math.cos(rumbo - capsula.rotation.y)) * Math.min(1, dt * 12);
+      depuracion.update();
+      for (const [m, t] of brillos) {
+        const k = Math.max(0, t - dt);
+        m.material.emissive.setRGB(k * 3, k * 3, k * 2);
+        if (k === 0) brillos.delete(m); else brillos.set(m, k);
+      }
+      // las que se cayeron del mundo vuelven a caer desde arriba
+      for (const b of cosas.keys()) if (b.position[1] < -20) b.teleport([0, 6, 0]);
+      controls.target.lerp(capsula.position.clone().setY(capsula.position.y + 1), Math.min(1, dt * 4));
+      controls.update();
+      renderer.render(scene, camera);
+      if (cuadros++ % 10 === 0) {
+        const s = fisica.stats();
+        estado.textContent = `cuerpos ${s.bodies} · dormidos ${s.sleeping} · contactos ${s.contacts} · héroe ${heroe.position.map((v) => v.toFixed(2)).join(', ')} · ${heroe.grounded ? 'en el piso' : 'en el aire'}${enZona ? ' · EN LA ZONA' : ''}`;
+      }
+    });
+    Object.assign(window, { THREE, renderer, scene, camera, controls, fisica, enlaces, depuracion, heroe, zona, teclas, cosas, soltar, alternar, zonaMat, estado: () => ({ enZona, ...fisica.stats() }) });
+    window.listo = true;
+  </script>
+</body>
+</html>
